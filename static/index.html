@@ -204,6 +204,10 @@
       transition: width 0.3s linear;
     }
     .drawer-badge { font-size: 0.8rem; color: var(--accent); margin-left: 0.25rem; }
+    .drawer-intro { text-align: center; padding: 2rem 1.5rem; margin-bottom: 1rem; }
+    .drawer-intro-title { font-size: 1.25rem; font-weight: 600; margin-bottom: 0.5rem; }
+    .drawer-intro .word-display { filter: none; margin: 1rem 0; }
+    .drawer-intro .word-display.hidden { filter: none; }
     .scores-table { font-size: 0.9rem; margin-top: 0.5rem; }
     .scores-table td { padding: 0.25rem 0.5rem 0.25rem 0; }
   </style>
@@ -237,11 +241,16 @@
     </div>
     <div class="game-layout" style="margin-top: 1rem;">
       <div>
+        <div id="drawer-intro" class="drawer-intro card" style="display:none;">
+          <p class="drawer-intro-title">Your turn to draw!</p>
+          <p class="word-display" id="drawer-intro-word">?????</p>
+          <button class="btn btn-primary" id="btn-start-drawing">Start drawing</button>
+        </div>
         <div class="word-display hidden" id="word-display">?????</div>
         <div class="timer-bar" id="timer-wrap" style="display:none;">
           <div class="timer-bar-inner" id="timer-bar" style="width:100%;"></div>
         </div>
-        <div class="canvas-wrap">
+        <div class="canvas-wrap" id="canvas-wrap">
           <canvas id="canvas"></canvas>
         </div>
         <div class="tools" id="tools" style="display:none;">
@@ -249,6 +258,7 @@
           <button class="size-btn active" data-size="2" title="Small">•</button>
           <button class="size-btn" data-size="6" title="Medium">•</button>
           <button class="size-btn" data-size="12" title="Large">•</button>
+          <button class="btn btn-secondary btn-small" id="btn-eraser" title="Eraser">Eraser</button>
           <button class="btn btn-secondary btn-small" id="btn-clear">Clear</button>
         </div>
       </div>
@@ -276,6 +286,7 @@
       let timerInterval = null;
       let brushSize = 6;
       let brushColor = '#1f2937';
+      let eraserMode = false;
       let maskedWord = [];
 
       const screenLobby = document.getElementById('screen-lobby');
@@ -297,6 +308,10 @@
       const chat = document.getElementById('chat');
       const guessInput = document.getElementById('guess');
       const btnGuess = document.getElementById('btn-guess');
+      const drawerIntro = document.getElementById('drawer-intro');
+      const drawerIntroWord = document.getElementById('drawer-intro-word');
+      const btnStartDrawing = document.getElementById('btn-start-drawing');
+      const btnEraser = document.getElementById('btn-eraser');
 
       function showScreen(screen) {
         screenLobby.classList.toggle('active', screen === 'lobby');
@@ -403,28 +418,74 @@
           } else if (msg.type === 'round_start') {
             youDraw = msg.youDraw;
             roundTime = msg.roundTime || 80;
-            roundEndAt = Date.now() / 1000 + roundTime;
-            if (msg.youDraw && msg.word) {
-              wordDisplay.textContent = msg.word;
-              wordDisplay.classList.remove('hidden');
-              tools.style.display = 'flex';
+            if (msg.drawerIntro && msg.youDraw && msg.word) {
+              drawerIntro.style.display = 'block';
+              drawerIntroWord.textContent = msg.word;
+              drawerIntroWord.classList.remove('hidden');
+              wordDisplay.style.display = 'none';
+              timerWrap.style.display = 'none';
+              tools.style.display = 'none';
+              canvas.parentElement.style.display = 'none';
               guessInput.disabled = true;
               btnGuess.disabled = true;
-              setTimeout(resizeCanvas, 50);
               maskedWord = [];
-            } else {
+              roundEndAt = null;
+            } else if (msg.drawerIntro && !msg.youDraw) {
               const len = msg.wordLength || 0;
               maskedWord = len ? Array(len).fill('_') : [];
               wordDisplay.textContent = maskedWord.join(' ');
               wordDisplay.classList.remove('hidden');
+              wordDisplay.style.display = 'block';
+              drawerIntro.style.display = 'none';
               tools.style.display = 'none';
               guessInput.disabled = false;
               btnGuess.disabled = false;
+              addChat('Drawer is preparing...', 'system');
+              roundEndAt = null;
+              timerWrap.style.display = 'none';
+            } else {
+              drawerIntro.style.display = 'none';
+              roundEndAt = Date.now() / 1000 + roundTime;
+              if (msg.youDraw && msg.word) {
+                wordDisplay.textContent = msg.word;
+                wordDisplay.classList.remove('hidden');
+                wordDisplay.style.display = 'block';
+                tools.style.display = 'flex';
+                guessInput.disabled = true;
+                btnGuess.disabled = true;
+                setTimeout(resizeCanvas, 50);
+                maskedWord = [];
+              } else {
+                const len = msg.wordLength || 0;
+                maskedWord = len ? Array(len).fill('_') : [];
+                wordDisplay.textContent = maskedWord.join(' ');
+                wordDisplay.classList.remove('hidden');
+                wordDisplay.style.display = 'block';
+                tools.style.display = 'none';
+                guessInput.disabled = false;
+                btnGuess.disabled = false;
+              }
+              startRoundTimer();
             }
             clearCanvas();
-            startRoundTimer();
             btnStart.style.display = 'none';
             btnNext.style.display = 'inline-block';
+          } else if (msg.type === 'drawing_started') {
+            roundTime = msg.roundTime || 80;
+            roundEndAt = Date.now() / 1000 + roundTime;
+            drawerIntro.style.display = 'none';
+            wordDisplay.style.display = 'block';
+            timerWrap.style.display = 'block';
+            canvas.parentElement.style.display = 'block';
+            if (youDraw) {
+              tools.style.display = 'flex';
+              guessInput.disabled = true;
+              btnGuess.disabled = true;
+              setTimeout(resizeCanvas, 50);
+            } else {
+              addChat('Drawer started!', 'system');
+            }
+            startRoundTimer();
           } else if (msg.type === 'round_start_broadcast') {
             drawerId = msg.drawerId;
             updatePlayers(msg.players, msg.scores || null);
@@ -468,6 +529,18 @@
         }
       });
 
+      btnStartDrawing.addEventListener('click', () => {
+        if (ws && ws.readyState === WebSocket.OPEN) {
+          ws.send(JSON.stringify({ type: 'start_drawing' }));
+        }
+      });
+
+      btnEraser.addEventListener('click', () => {
+        eraserMode = !eraserMode;
+        btnEraser.textContent = eraserMode ? 'Brush' : 'Eraser';
+        btnEraser.classList.toggle('active', eraserMode);
+      });
+
       document.querySelectorAll('.size-btn').forEach(btn => {
         btn.addEventListener('click', () => {
           document.querySelectorAll('.size-btn').forEach(b => b.classList.remove('active'));
@@ -475,7 +548,9 @@
           brushSize = parseInt(btn.dataset.size, 10);
         });
       });
-      colorInput.addEventListener('input', () => { brushColor = colorInput.value; });
+      colorInput.addEventListener('input', () => {
+        if (!eraserMode) brushColor = colorInput.value;
+      });
 
       let drawing = false;
       let lastStroke = null;
@@ -490,7 +565,9 @@
         e.preventDefault();
         drawing = true;
         const p = getPos(e.touches ? e.touches[0] : e);
-        lastStroke = { color: brushColor, size: brushSize, x0: p.x, y0: p.y, points: [] };
+        const color = eraserMode ? '#ffffff' : brushColor;
+        const size = eraserMode ? 16 : brushSize;
+        lastStroke = { color: color, size: size, x0: p.x, y0: p.y, points: [] };
         const ctx = canvas.getContext('2d');
         ctx.fillStyle = lastStroke.color;
         ctx.beginPath();
