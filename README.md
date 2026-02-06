@@ -56,25 +56,17 @@ docker run -p 7860:7860 domdrawguess
 
 Then open `http://localhost:7860` (or your server’s host/port).
 
-## Create the GitHub repo
+## First push (after creating the repo on GitHub)
 
-You need to create the repository on GitHub yourself (the API requires your auth). Then push this project:
+Replace `YOUR_GITHUB_USERNAME` with your GitHub username, then run:
 
 ```bash
 cd domdrawguess
-git init
-git add .
-git commit -m "Initial commit: DomDrawGuess multiplayer game"
-git branch -M main
-git remote add origin https://github.com/YOUR_USERNAME/domdrawguess.git
+git remote add origin https://github.com/YOUR_GITHUB_USERNAME/domdrawguess.git
 git push -u origin main
 ```
 
-Replace `YOUR_USERNAME` with your GitHub username. If you prefer SSH:
-
-```bash
-git remote add origin git@github.com:YOUR_USERNAME/domdrawguess.git
-```
+If you prefer SSH: `git remote add origin git@github.com:YOUR_GITHUB_USERNAME/domdrawguess.git`
 
 ## How to play
 
