@@ -46,7 +46,7 @@ class ConnectionManager:
         self.ws_to_player: dict[str, dict[WebSocket, str]] = {}  # room_id -> { ws: player_id }
 
     async def connect(self, room_id: str, websocket: WebSocket, player_name: str) -> str:
-        await websocket.accept()
+        """Register a connection (caller must accept the WebSocket first)."""
         if room_id not in self.connections:
             self.connections[room_id] = []
             self.ws_to_player[room_id] = {}
@@ -101,8 +101,54 @@ class ConnectionManager:
         except Exception:
             pass
 
+    async def send_to_guessers(self, room_id: str, drawer_ws: WebSocket | None, message: dict):
+        """Send message to all in room except the drawer."""
+        if room_id not in self.connections:
+            return
+        payload = json.dumps(message)
+        for ws in self.connections[room_id]:
+            if ws != drawer_ws and ws.client_state.name == "CONNECTED":
+                try:
+                    await ws.send_text(payload)
+                except Exception:
+                    pass
+
 
 manager = ConnectionManager()
+
+
+def _get_drawer_ws(room_id: str, drawer_id: str):
+    for ws, pid in manager.ws_to_player.get(room_id, {}).items():
+        if pid == drawer_id:
+            return ws
+    return None
+
+
+async def _hint_loop(room_id: str, drawer_id: str, word: str, round_time: float):
+    """Every ~15s reveal a random letter to guessers. Stops when round ends."""
+    room = ROOMS.get(room_id)
+    if not room or room.get("word") != word:
+        return
+    room["hint_revealed"] = room.get("hint_revealed") or set()
+    n = len(word)
+    drawer_ws = _get_drawer_ws(room_id, drawer_id)
+    interval = max(12, round_time / 4)
+    try:
+        for _ in range(int(round_time / interval)):
+            await asyncio.sleep(interval)
+            room = ROOMS.get(room_id)
+            if not room or room.get("word") != word:
+                break
+            revealed = room.get("hint_revealed") or set()
+            unrevealed = [i for i in range(n) if i not in revealed]
+            if not unrevealed:
+                break
+            i = random.choice(unrevealed)
+            revealed.add(i)
+            room["hint_revealed"] = revealed
+            await manager.send_to_guessers(room_id, drawer_ws, {"type": "hint", "index": i, "letter": word[i]})
+    except asyncio.CancelledError:
+        pass
 
 
 static_dir = Path(__file__).parent.parent / "static"
@@ -127,6 +173,7 @@ async def health():
 async def websocket_endpoint(websocket: WebSocket, room_id: str):
     player_id = None
     try:
+        await websocket.accept()
         first = await websocket.receive_text()
         data = json.loads(first)
         player_name = (data.get("name") or "Player").strip()[:24] or "Player"
@@ -178,11 +225,17 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 if word and guess == word:
                     room["scores"][player_id] = room["scores"].get(player_id, 0) + 100
                     room["word"] = None
+                    if room.get("hint_task"):
+                        room["hint_task"].cancel()
+                        room["hint_task"] = None
+                    pl = list(room["players"].keys())
+                    players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
                     await manager.broadcast_room(room_id, {
                         "type": "correct",
                         "playerId": player_id,
                         "name": ROOMS[room_id]["players"].get(player_id, {}).get("name", "?"),
                         "scores": room["scores"],
+                        "players": players_list,
                     })
                 else:
                     await manager.broadcast_room(room_id, {
@@ -203,33 +256,46 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 drawer_id = pl[room["drawer_index"]]
                 room["word"] = get_random_word()
                 room["strokes"] = []
+                room["hint_revealed"] = set()
+                if room.get("hint_task"):
+                    room["hint_task"].cancel()
+                round_time = room.get("round_time", 80)
                 room["round_start"] = asyncio.get_event_loop().time()
+                word_len = len(room["word"])
                 w2p = manager.ws_to_player.get(room_id, {})
                 for ws in manager.connections.get(room_id, []):
                     pid = w2p.get(ws)
                     if pid == drawer_id:
-                        await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": room.get("round_time", 80)})
+                        await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": round_time})
                     else:
-                        await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": room.get("round_time", 80)})
+                        await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": round_time, "wordLength": word_len})
+                room["hint_task"] = asyncio.create_task(_hint_loop(room_id, drawer_id, room["word"], round_time))
                 players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
                 await manager.broadcast_room(room_id, {"type": "round_start_broadcast", "drawerId": drawer_id, "players": players_list})
             elif t == "next_round":
                 room = ROOMS.get(room_id)
                 if not room or not room.get("players"):
                     continue
+                if room.get("hint_task"):
+                    room["hint_task"].cancel()
+                    room["hint_task"] = None
                 pl = list(room["players"].keys())
                 room["drawer_index"] = (room.get("drawer_index", 0) + 1) % len(pl)
                 drawer_id = pl[room["drawer_index"]]
                 room["word"] = get_random_word()
                 room["strokes"] = []
+                room["hint_revealed"] = set()
+                round_time = room.get("round_time", 80)
                 room["round_start"] = asyncio.get_event_loop().time()
+                word_len = len(room["word"])
                 w2p = manager.ws_to_player.get(room_id, {})
                 for ws in manager.connections.get(room_id, []):
                     pid = w2p.get(ws)
                     if pid == drawer_id:
-                        await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": room.get("round_time", 80)})
+                        await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": round_time})
                     else:
-                        await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": room.get("round_time", 80)})
+                        await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": round_time, "wordLength": word_len})
+                room["hint_task"] = asyncio.create_task(_hint_loop(room_id, drawer_id, room["word"], round_time))
                 players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
                 await manager.broadcast_room(room_id, {"type": "round_start_broadcast", "drawerId": drawer_id, "players": players_list})
     except WebSocketDisconnect:

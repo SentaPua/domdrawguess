@@ -276,6 +276,7 @@
       let timerInterval = null;
       let brushSize = 6;
       let brushColor = '#1f2937';
+      let maskedWord = [];
 
       const screenLobby = document.getElementById('screen-lobby');
       const screenGame = document.getElementById('screen-game');
@@ -340,10 +341,12 @@
       }
 
       function updatePlayers(players, scores) {
+        if (!players || !players.length) return;
         playersList.innerHTML = '';
-        (players || []).forEach(p => {
+        players.forEach(p => {
+          const score = (scores && scores[p.id] != null) ? scores[p.id] : (p.score != null ? p.score : 0);
           const li = document.createElement('li');
-          li.innerHTML = p.name + (p.id === drawerId ? '<span class="drawer-badge">drawing</span>' : '') + ' <span>' + (scores && scores[p.id] != null ? scores[p.id] : 0) + '</span>';
+          li.innerHTML = p.name + (p.id === drawerId ? '<span class="drawer-badge">drawing</span>' : '') + ' <span>' + score + '</span>';
           playersList.appendChild(li);
         });
       }
@@ -382,9 +385,9 @@
             roomLabel.textContent = roomId;
             updatePlayers(msg.players, msg.scores);
             showScreen('game');
+            ensureCanvasSize();
             if (msg.strokes && msg.strokes.length) {
-              resizeCanvas();
-              msg.strokes.forEach(drawStroke);
+              setTimeout(() => { resizeCanvas(); msg.strokes.forEach(drawStroke); }, 50);
             }
             if (!msg.started) {
               btnStart.style.display = 'inline-block';
@@ -407,9 +410,13 @@
               tools.style.display = 'flex';
               guessInput.disabled = true;
               btnGuess.disabled = true;
+              setTimeout(resizeCanvas, 50);
+              maskedWord = [];
             } else {
-              wordDisplay.textContent = '???';
-              wordDisplay.classList.add('hidden');
+              const len = msg.wordLength || 0;
+              maskedWord = len ? Array(len).fill('_') : [];
+              wordDisplay.textContent = maskedWord.join(' ');
+              wordDisplay.classList.remove('hidden');
               tools.style.display = 'none';
               guessInput.disabled = false;
               btnGuess.disabled = false;
@@ -420,7 +427,12 @@
             btnNext.style.display = 'inline-block';
           } else if (msg.type === 'round_start_broadcast') {
             drawerId = msg.drawerId;
-            updatePlayers(msg.players, null);
+            updatePlayers(msg.players, msg.scores || null);
+          } else if (msg.type === 'hint') {
+            if (maskedWord.length && msg.index >= 0 && msg.index < maskedWord.length && msg.letter) {
+              maskedWord[msg.index] = msg.letter;
+              wordDisplay.textContent = maskedWord.join(' ');
+            }
           } else if (msg.type === 'stroke') {
             drawStroke(msg.stroke);
           } else if (msg.type === 'clear') {
@@ -429,7 +441,7 @@
             addChat(msg.name + ': ' + msg.guess, 'guess');
           } else if (msg.type === 'correct') {
             addChat(msg.name + ' guessed the word!', 'correct');
-            updatePlayers(null, msg.scores);
+            if (msg.players && msg.players.length) updatePlayers(msg.players, msg.scores);
           }
         };
         ws.onclose = () => {
@@ -479,6 +491,11 @@
         drawing = true;
         const p = getPos(e.touches ? e.touches[0] : e);
         lastStroke = { color: brushColor, size: brushSize, x0: p.x, y0: p.y, points: [] };
+        const ctx = canvas.getContext('2d');
+        ctx.fillStyle = lastStroke.color;
+        ctx.beginPath();
+        ctx.arc(p.x, p.y, lastStroke.size / 2, 0, Math.PI * 2);
+        ctx.fill();
       }
       function moveDraw(e) {
         if (!drawing || !lastStroke) return;
@@ -499,6 +516,7 @@
         if (!drawing || !lastStroke) return;
         e.preventDefault();
         drawing = false;
+        if (lastStroke.points.length === 0) lastStroke.points = [lastStroke.x0, lastStroke.y0];
         if (ws && ws.readyState === WebSocket.OPEN) {
           ws.send(JSON.stringify({ type: 'stroke', stroke: lastStroke }));
         }
@@ -527,8 +545,13 @@
       btnGuess.addEventListener('click', sendGuess);
       guessInput.addEventListener('keydown', (e) => { if (e.key === 'Enter') sendGuess(); });
 
-      window.addEventListener('resize', resizeCanvas);
-      resizeCanvas();
+      function ensureCanvasSize() {
+        requestAnimationFrame(() => {
+          resizeCanvas();
+        });
+      }
+      window.addEventListener('resize', ensureCanvasSize);
+      ensureCanvasSize();
     })();
   </script>
 </body>
