@@ -151,6 +151,56 @@ async def _hint_loop(room_id: str, drawer_id: str, word: str, round_time: float)
         pass
 
 
+async def _end_round_and_maybe_next(room_id: str):
+    """End current round (round_end), then game_over if round 10 else start next round."""
+    room = ROOMS.get(room_id)
+    if not room or not room.get("players") or not room.get("started"):
+        return
+    if room.get("hint_task"):
+        room["hint_task"].cancel()
+        room["hint_task"] = None
+    round_num = room.get("round_number", 1)
+    current_word = room.get("word")
+    correct_guessers_list = list(room.get("correct_guessers", set()))
+    pl = list(room["players"].keys())
+    players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
+    await manager.broadcast_room(room_id, {
+        "type": "round_end",
+        "word": current_word,
+        "correctGuessers": correct_guessers_list,
+        "roundNumber": round_num,
+        "totalRounds": 10,
+        "players": players_list,
+        "scores": room["scores"],
+    })
+    if round_num >= 10:
+        await manager.broadcast_room(room_id, {"type": "game_over", "players": players_list, "scores": room["scores"]})
+        room["started"] = False
+        room["round_number"] = 0
+        return
+    room["round_number"] = round_num + 1
+    room["drawer_index"] = (room.get("drawer_index", 0) + 1) % len(pl)
+    drawer_id = pl[room["drawer_index"]]
+    room["drawer_id"] = drawer_id
+    room["word"] = get_random_word()
+    room["strokes"] = []
+    room["hint_revealed"] = set()
+    room["drawing_started"] = False
+    room["correct_guessers"] = set()
+    round_time = room.get("round_time", 80)
+    word_len = len(room["word"])
+    rn = room["round_number"]
+    w2p = manager.ws_to_player.get(room_id, {})
+    for ws in manager.connections.get(room_id, []):
+        pid = w2p.get(ws)
+        if pid == drawer_id:
+            await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": round_time, "drawerIntro": True, "roundNumber": rn, "totalRounds": 10})
+        else:
+            await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": round_time, "wordLength": word_len, "drawerIntro": True, "roundNumber": rn, "totalRounds": 10})
+    players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
+    await manager.broadcast_room(room_id, {"type": "round_start_broadcast", "drawerId": drawer_id, "players": players_list, "roundNumber": rn, "totalRounds": 10})
+
+
 static_dir = Path(__file__).parent.parent / "static"
 if static_dir.exists():
     app.mount("/static", StaticFiles(directory=str(static_dir)), name="static")
@@ -247,6 +297,8 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                             "guessOrder": count,
                             "points": guesser_points,
                         })
+                        if drawer_id_round and len(correct_guessers) >= len(pl) - 1:
+                            await _end_round_and_maybe_next(room_id)
                 else:
                     await manager.broadcast_room(room_id, {
                         "type": "guess",
@@ -296,52 +348,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 room["hint_task"] = asyncio.create_task(_hint_loop(room_id, room["drawer_id"], room["word"], round_time))
                 await manager.broadcast_room(room_id, {"type": "drawing_started", "roundTime": round_time})
             elif t == "next_round":
-                room = ROOMS.get(room_id)
-                if not room or not room.get("players") or not room.get("started"):
-                    continue
-                if room.get("hint_task"):
-                    room["hint_task"].cancel()
-                    room["hint_task"] = None
-                round_num = room.get("round_number", 1)
-                current_word = room.get("word")
-                correct_guessers_list = list(room.get("correct_guessers", set()))
-                pl = list(room["players"].keys())
-                players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
-                await manager.broadcast_room(room_id, {
-                    "type": "round_end",
-                    "word": current_word,
-                    "correctGuessers": correct_guessers_list,
-                    "roundNumber": round_num,
-                    "totalRounds": 10,
-                    "players": players_list,
-                    "scores": room["scores"],
-                })
-                if round_num >= 10:
-                    await manager.broadcast_room(room_id, {"type": "game_over", "players": players_list, "scores": room["scores"]})
-                    room["started"] = False
-                    room["round_number"] = 0
-                    continue
-                room["round_number"] = round_num + 1
-                room["drawer_index"] = (room.get("drawer_index", 0) + 1) % len(pl)
-                drawer_id = pl[room["drawer_index"]]
-                room["drawer_id"] = drawer_id
-                room["word"] = get_random_word()
-                room["strokes"] = []
-                room["hint_revealed"] = set()
-                room["drawing_started"] = False
-                room["correct_guessers"] = set()
-                round_time = room.get("round_time", 80)
-                word_len = len(room["word"])
-                rn = room["round_number"]
-                w2p = manager.ws_to_player.get(room_id, {})
-                for ws in manager.connections.get(room_id, []):
-                    pid = w2p.get(ws)
-                    if pid == drawer_id:
-                        await manager.send_personal(ws, {"type": "round_start", "word": room["word"], "youDraw": True, "roundTime": round_time, "drawerIntro": True, "roundNumber": rn, "totalRounds": 10})
-                    else:
-                        await manager.send_personal(ws, {"type": "round_start", "word": None, "youDraw": False, "roundTime": round_time, "wordLength": word_len, "drawerIntro": True, "roundNumber": rn, "totalRounds": 10})
-                players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
-                await manager.broadcast_room(room_id, {"type": "round_start_broadcast", "drawerId": drawer_id, "players": players_list, "roundNumber": rn, "totalRounds": 10})
+                await _end_round_and_maybe_next(room_id)
     except WebSocketDisconnect:
         pass
     except Exception:

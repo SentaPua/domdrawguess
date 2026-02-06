@@ -191,6 +191,7 @@
       letter-spacing: 0.2em;
     }
     .word-display.hidden { filter: blur(6px); user-select: none; }
+    .word-display.drawer-word { filter: none !important; }
     .timer-bar {
       height: 4px;
       background: var(--surface2);
@@ -315,6 +316,7 @@
       let currentRound = 0;
       let totalRounds = 10;
       let correctGuessersThisRound = new Set();
+      let currentWord = '';
 
       const screenLobby = document.getElementById('screen-lobby');
       const screenGame = document.getElementById('screen-game');
@@ -463,6 +465,7 @@
               roundLabel.style.display = 'inline';
             }
             if (msg.drawerIntro && msg.youDraw && msg.word) {
+              currentWord = msg.word;
               drawerIntro.style.display = 'block';
               drawerIntroWord.textContent = msg.word;
               drawerIntroWord.classList.remove('hidden');
@@ -475,6 +478,7 @@
               maskedWord = [];
               roundEndAt = null;
             } else if (msg.drawerIntro && !msg.youDraw) {
+              wordDisplay.classList.remove('drawer-word');
               const len = msg.wordLength || 0;
               maskedWord = len ? Array(len).fill('_') : [];
               wordDisplay.textContent = maskedWord.join(' ');
@@ -499,19 +503,20 @@
                 btnGuess.disabled = true;
                 setTimeout(resizeCanvas, 50);
                 maskedWord = [];
-              } else {
-                const len = msg.wordLength || 0;
-                maskedWord = len ? Array(len).fill('_') : [];
-                wordDisplay.textContent = maskedWord.join(' ');
-                wordDisplay.classList.remove('hidden');
-                wordDisplay.style.display = 'block';
-                tools.style.display = 'none';
-                guessInput.disabled = false;
-                btnGuess.disabled = false;
-              }
-              startRoundTimer();
+            } else {
+              wordDisplay.classList.remove('drawer-word');
+              const len = msg.wordLength || 0;
+              maskedWord = len ? Array(len).fill('_') : [];
+              wordDisplay.textContent = maskedWord.join(' ');
+              wordDisplay.classList.remove('hidden');
+              wordDisplay.style.display = 'block';
+              tools.style.display = 'none';
+              guessInput.disabled = false;
+              btnGuess.disabled = false;
             }
-            clearCanvas();
+            startRoundTimer();
+          }
+          clearCanvas();
             btnStart.style.display = 'none';
             btnNext.style.display = 'inline-block';
           } else if (msg.type === 'drawing_started') {
@@ -523,11 +528,15 @@
             timerWrap.style.display = 'block';
             canvas.parentElement.style.display = 'block';
             if (youDraw) {
+              wordDisplay.textContent = currentWord;
+              wordDisplay.classList.remove('hidden');
+              wordDisplay.classList.add('drawer-word');
               tools.style.display = 'flex';
               guessInput.disabled = true;
               btnGuess.disabled = true;
               setTimeout(resizeCanvas, 50);
             } else {
+              wordDisplay.classList.remove('drawer-word');
               addChat('Drawer started!', 'system');
             }
             startRoundTimer();
