@@ -223,27 +223,30 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 word = (room or {}).get("word")
                 guess = (msg.get("guess") or "").strip().lower()
                 if word and guess == word:
-                    count = room.get("correct_guess_count", 0) + 1
-                    room["correct_guess_count"] = count
-                    guesser_points = max(10, 100 - (count - 1) * 25)
-                    drawer_id_round = room.get("drawer_id")
-                    drawer_reward = 25
-                    room["scores"][player_id] = room["scores"].get(player_id, 0) + guesser_points
-                    if drawer_id_round and drawer_id_round != player_id:
-                        room["scores"][drawer_id_round] = room["scores"].get(drawer_id_round, 0) + drawer_reward
-                    room["word"] = None
-                    if room.get("hint_task"):
-                        room["hint_task"].cancel()
-                        room["hint_task"] = None
-                    pl = list(room["players"].keys())
-                    players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
-                    await manager.broadcast_room(room_id, {
-                        "type": "correct",
-                        "playerId": player_id,
-                        "name": ROOMS[room_id]["players"].get(player_id, {}).get("name", "?"),
-                        "scores": room["scores"],
-                        "players": players_list,
-                    })
+                    correct_guessers = room.get("correct_guessers") or set()
+                    if player_id in correct_guessers:
+                        pass
+                    else:
+                        correct_guessers.add(player_id)
+                        room["correct_guessers"] = correct_guessers
+                        count = len(correct_guessers)
+                        guesser_points = max(10, 100 - (count - 1) * 25)
+                        drawer_id_round = room.get("drawer_id")
+                        drawer_reward = 25
+                        room["scores"][player_id] = room["scores"].get(player_id, 0) + guesser_points
+                        if drawer_id_round and drawer_id_round != player_id:
+                            room["scores"][drawer_id_round] = room["scores"].get(drawer_id_round, 0) + drawer_reward
+                        pl = list(room["players"].keys())
+                        players_list = [{"id": p, "name": room["players"][p]["name"], "score": room["scores"].get(p, 0)} for p in pl]
+                        await manager.broadcast_room(room_id, {
+                            "type": "correct",
+                            "playerId": player_id,
+                            "name": ROOMS[room_id]["players"].get(player_id, {}).get("name", "?"),
+                            "scores": room["scores"],
+                            "players": players_list,
+                            "guessOrder": count,
+                            "points": guesser_points,
+                        })
                 else:
                     await manager.broadcast_room(room_id, {
                         "type": "guess",
@@ -266,7 +269,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 room["strokes"] = []
                 room["hint_revealed"] = set()
                 room["drawing_started"] = False
-                room["correct_guess_count"] = 0
+                room["correct_guessers"] = set()
                 if room.get("hint_task"):
                     room["hint_task"].cancel()
                 round_time = room.get("round_time", 80)
@@ -306,7 +309,7 @@ async def websocket_endpoint(websocket: WebSocket, room_id: str):
                 room["strokes"] = []
                 room["hint_revealed"] = set()
                 room["drawing_started"] = False
-                room["correct_guess_count"] = 0
+                room["correct_guessers"] = set()
                 round_time = room.get("round_time", 80)
                 word_len = len(room["word"])
                 w2p = manager.ws_to_player.get(room_id, {})
